@@ -23,8 +23,8 @@ import torch
 from transformers import AutoModelForCausalLM
 
 from janus.models import MultiModalityCausalLM, VLChatProcessor
+from janus.utils.io import load_pil_images
 import numpy as np
-import os
 import PIL.Image
 
 # specify the path to the model
@@ -40,24 +40,24 @@ vl_gpt = vl_gpt.to(torch.bfloat16).cuda().eval()
 conversation = [
     {
         "role": "User",
-        "content": "A close-up high-contrast photo of Sydney Opera House sitting next to Eiffel tower, under a blue night sky of roiling energy, exploding yellow stars, and radiating swirls of blue.",
+        "content": "<image_placeholder>\nThe umbrella should be red.",
+        "images": ["images/edit_source_1.png"],
     },
-    {"role": "Assistant", "content": ""},
+    {"role": "Assistant", "content": f"{vl_chat_processor.image_start_tag}"},
 ]
 
-sft_format = vl_chat_processor.apply_sft_template_for_multi_turn_prompts(
-    conversations=conversation,
-    sft_format=vl_chat_processor.sft_format,
-    system_prompt="",
-)
-prompt = sft_format + vl_chat_processor.image_start_tag
+pil_images = load_pil_images(conversation)
+vl_chat_processor.system_prompt = ""
+prepare_inputs = vl_chat_processor(
+    conversations=conversation, images=pil_images, force_batchify=True
+).to(vl_gpt.device)
 
 
 @torch.inference_mode()
 def generate(
     mmgpt: MultiModalityCausalLM,
     vl_chat_processor: VLChatProcessor,
-    prompt: str,
+    prepare_inputs,
     temperature: float = 1,
     parallel_size: int = 16,
     cfg_weight: float = 5,
@@ -65,17 +65,19 @@ def generate(
     img_size: int = 384,
     patch_size: int = 16,
 ):
-    input_ids = vl_chat_processor.tokenizer.encode(prompt)
-    input_ids = torch.LongTensor(input_ids)
+    input_ids = prepare_inputs.input_ids[0]
+    inputs_embeds = mmgpt.prepare_inputs_embeds(**prepare_inputs)[0]
 
-    tokens = torch.zeros((parallel_size*2, len(input_ids)), dtype=torch.int).cuda()
-    for i in range(parallel_size*2):
+    tokens = torch.zeros((parallel_size * 2, len(input_ids)), dtype=torch.int).cuda()
+    token_embeds = torch.zeros((parallel_size * 2, *inputs_embeds.shape), dtype=inputs_embeds.dtype).cuda()
+    for i in range(parallel_size * 2):
         tokens[i, :] = input_ids
+        token_embeds[i, :] = inputs_embeds
         if i % 2 != 0:
-            tokens[i, 1:-1] = vl_chat_processor.pad_id
+            tokens[i, 1: -1] = vl_chat_processor.pad_id
+            token_embeds[i, :] = mmgpt.language_model.get_input_embeddings()(tokens[i, :])
 
-    inputs_embeds = mmgpt.language_model.get_input_embeddings()(tokens)
-
+    inputs_embeds = token_embeds
     generated_tokens = torch.zeros((parallel_size, image_token_num_per_image), dtype=torch.int).cuda()
 
     for i in range(image_token_num_per_image):
@@ -86,7 +88,7 @@ def generate(
         logit_cond = logits[0::2, :]
         logit_uncond = logits[1::2, :]
         
-        logits = logit_uncond + cfg_weight * (logit_cond-logit_uncond)
+        logits = logit_uncond + cfg_weight * (logit_cond - logit_uncond)
         probs = torch.softmax(logits / temperature, dim=-1)
 
         next_token = torch.multinomial(probs, num_samples=1)
@@ -96,7 +98,6 @@ def generate(
         img_embeds = mmgpt.prepare_gen_img_embeds(next_token)
         inputs_embeds = img_embeds.unsqueeze(dim=1)
 
-
     dec = mmgpt.gen_vision_model.decode_code(generated_tokens.to(dtype=torch.int), shape=[parallel_size, 8, img_size//patch_size, img_size//patch_size])
     dec = dec.to(torch.float32).cpu().numpy().transpose(0, 2, 3, 1)
 
@@ -105,14 +106,16 @@ def generate(
     visual_img = np.zeros((parallel_size, img_size, img_size, 3), dtype=np.uint8)
     visual_img[:, :, :] = dec
 
-    os.makedirs('generated_samples', exist_ok=True)
+    os.makedirs('generated_edit_samples', exist_ok=True)
     for i in range(parallel_size):
-        save_path = os.path.join('generated_samples', "img_{}.jpg".format(i))
+        save_path = os.path.join('generated_edit_samples', "img_{}.jpg".format(i))
         PIL.Image.fromarray(visual_img[i]).save(save_path)
 
 
 generate(
     vl_gpt,
     vl_chat_processor,
-    prompt,
+    prepare_inputs,
+    cfg_weight=5,
+    parallel_size=1,
 )

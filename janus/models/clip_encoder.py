@@ -23,6 +23,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms
 from einops import rearrange
+from attrdict import AttrDict
 
 from janus.models.siglip_vit import create_siglip_vit
 
@@ -32,6 +33,7 @@ class CLIPVisionTower(nn.Module):
         self,
         model_name: str = "siglip_large_patch16_384",
         image_size: Union[Tuple[int, int], int] = 336,
+        patch_size: int = 16,
         select_feature: str = "patch",
         select_layer: int = -2,
         select_layers: list = None,
@@ -50,13 +52,16 @@ class CLIPVisionTower(nn.Module):
         vision_tower_params = {
             "model_name": model_name,
             "image_size": image_size,
+            "patch_size": patch_size,
             "ckpt_path": ckpt_path,
             "select_layer": select_layer,
+            "num_image_token": (image_size // patch_size) ** 2,
         }
         vision_tower_params.update(kwargs)
         self.vision_tower, self.forward_kwargs = self.build_vision_tower(
             vision_tower_params
         )
+        self.vision_tower_params = AttrDict(vision_tower_params)
 
         if pixel_mean is not None and pixel_std is not None:
             image_norm = torchvision.transforms.Normalize(
@@ -73,9 +78,9 @@ class CLIPVisionTower(nn.Module):
             vision_tower = create_siglip_vit(**vision_tower_params)
             forward_kwargs = dict()
 
-        elif self.model_name.startswith("sam"):
-            vision_tower = create_sam_vit(**vision_tower_params)
-            forward_kwargs = dict()
+        # elif self.model_name.startswith("sam"):
+        #     vision_tower = create_sam_vit(**self.vision_tower_params)
+        #     forward_kwargs = dict()
 
         else:  # huggingface
             from transformers import CLIPVisionModel

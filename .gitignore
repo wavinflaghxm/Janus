@@ -419,3 +419,8 @@ tags
 .vscode
 .github
 generated_samples/
+
+data/
+test/
+work_dirs
+generated_edit_samples/

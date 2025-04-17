@@ -26,7 +26,7 @@ from janus.models import MultiModalityCausalLM, VLChatProcessor
 from janus.utils.io import load_pil_images
 
 # specify the path to the model
-model_path = "deepseek-ai/Janus-1.3B"
+model_path = "/home/hxm/Janus/work_dirs/janus_finetune_llava-ov-si_chartqa"
 vl_chat_processor: VLChatProcessor = VLChatProcessor.from_pretrained(model_path)
 tokenizer = vl_chat_processor.tokenizer
 
@@ -38,8 +38,8 @@ vl_gpt = vl_gpt.to(torch.bfloat16).cuda().eval()
 conversation = [
     {
         "role": "User",
-        "content": "<image_placeholder>\nConvert the formula into latex code.",
-        "images": ["images/equation.png"],
+        "content": "<image_placeholder>\nWhat percent who think of President Donald Trump as Dangerous?",
+        "images": ["data/LMUData/images/ChartQA_TEST/7.jpg"],
     },
     {"role": "Assistant", "content": ""},
 ]
