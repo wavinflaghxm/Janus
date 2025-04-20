@@ -527,9 +527,10 @@ class X2IGenDataset(Dataset):
                 else:
                     # Compute token length using the tokenizer
                     conversations = data_item['instruction']
+                    # Use the text length + image count as a key for caching
+                    text_length = data_item.get('text_length', len(conversations))
                     num_images = len(data_item.get('input_images', [])) + 1
-                    # Use the instruction content + image count as a key for caching
-                    cache_key = (len(conversations), num_images)
+                    cache_key = (text_length, num_images)
                     if cache_key not in self.conv2length:
                         token_length = self.tokenizer(
                             conversations, return_tensors='pt', padding=False, truncation=False,
@@ -572,6 +573,7 @@ class X2IGenDataset(Dataset):
 
         unique_image_ids = sorted(list(set(image_ids)))
         input_images = [data_item['input_images'][i - 1] for i in image_ids]
+
         assert unique_image_ids == list(range(1, len(unique_image_ids) + 1)), \
             f'`image_ids` must start from 1, and must be continuous int, e.g. [1, 2, 3], cannot be {unique_image_ids}.'
         # Total images must be the same as the number of image tags
@@ -627,20 +629,17 @@ class X2IGenDataset(Dataset):
         while True:
             if try_cnt > max_try:
                 raise StopIteration
-            data_item = json.loads(self.raw_data[i])
-            ret = self.get_item(data_item)
-            break
-            # try:
-            #     data_item = json.loads(self.raw_data[i])
-            #     ret = self.get_item(data_item)
-            #     break
-            # except Exception as e:
-            #     try_cnt += 1
-            #     print(e, self.ds_name, flush=True)
-            #     if not isinstance(e, (UnidentifiedImageError, FileNotFoundError)):
-            #         traceback.print_exc()
-            #     data_item = json.loads(self.raw_data[i])
-            #     data_path = data_item['output_image']
-            #     print(f'Failed to load image: {data_path}, the dataset is: {self.ds_name}')
-            #     i = random.randint(0, len(self.raw_data) - 1)
+            try:
+                data_item = json.loads(self.raw_data[i])
+                ret = self.get_item(data_item)
+                break
+            except Exception as e:
+                try_cnt += 1
+                print(e, self.ds_name, flush=True)
+                if not isinstance(e, (UnidentifiedImageError, FileNotFoundError)):
+                    traceback.print_exc()
+                data_item = json.loads(self.raw_data[i])
+                data_path = data_item['output_image']
+                print(f'Failed to load image: {data_path}, the dataset is: {self.ds_name}')
+                i = random.randint(0, len(self.raw_data) - 1)
         return ret

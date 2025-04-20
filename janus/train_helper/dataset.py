@@ -185,10 +185,6 @@ def preprocess(
                 # The legacy and non-legacy modes handle special tokens differently
                 instruction_len -= 1
 
-            # Ignore the space token
-            if target[cur_len + instruction_len].item() == tokenizer.encode(' ')[-1]:
-                instruction_len += 1
-
             # Ignore the user instructions
             target[cur_len: cur_len + instruction_len] = IGNORE_TOKEN_ID
             cur_len += turn_len

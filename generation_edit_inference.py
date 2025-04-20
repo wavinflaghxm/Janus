@@ -28,7 +28,8 @@ import numpy as np
 import PIL.Image
 
 # specify the path to the model
-model_path = "deepseek-ai/Janus-1.3B"
+# model_path = "deepseek-ai/Janus-1.3B"
+model_path = "work_dirs/janus_finetune_x2i"
 vl_chat_processor: VLChatProcessor = VLChatProcessor.from_pretrained(model_path)
 tokenizer = vl_chat_processor.tokenizer
 
@@ -40,8 +41,9 @@ vl_gpt = vl_gpt.to(torch.bfloat16).cuda().eval()
 conversation = [
     {
         "role": "User",
-        "content": "<image_placeholder>\nThe umbrella should be red.",
-        "images": ["images/edit_source_1.png"],
+        "content": "Alter the posture of person in the picture <image_placeholder> to reflect pose <image_placeholder>.",
+        "images": ["data/OmniGen/X2I-mm-instruction/fashiontryon/train/705/2.jpg",
+                   "data/OmniGen/X2I-mm-instruction/fashiontryon/train/705/0_target/segment_vis.png"],
     },
     {"role": "Assistant", "content": f"{vl_chat_processor.image_start_tag}"},
 ]
@@ -61,21 +63,37 @@ def generate(
     temperature: float = 1,
     parallel_size: int = 16,
     cfg_weight: float = 5,
+    img_cfg_weight: float = 0,
     image_token_num_per_image: int = 576,
     img_size: int = 384,
     patch_size: int = 16,
 ):
-    input_ids = prepare_inputs.input_ids[0]
-    inputs_embeds = mmgpt.prepare_inputs_embeds(**prepare_inputs)[0]
+    input_ids = prepare_inputs.input_ids[0][:-1]  # remove the end token
+    inputs_embeds = mmgpt.prepare_inputs_embeds(**prepare_inputs)[0][:-1]  # remove the end token
 
-    tokens = torch.zeros((parallel_size * 2, len(input_ids)), dtype=torch.int).cuda()
-    token_embeds = torch.zeros((parallel_size * 2, *inputs_embeds.shape), dtype=inputs_embeds.dtype).cuda()
-    for i in range(parallel_size * 2):
+    # Use the VQ to encode the image
+    pixel_values = prepare_inputs.pixel_values.squeeze(0)
+    images_seq_mask = prepare_inputs.images_seq_mask.squeeze(0)[:-1]  # remove the end token
+    encode_indices = mmgpt.gen_vision_model.encode(pixel_values)[2][2]
+    encode_embeds = mmgpt.prepare_gen_img_embeds(encode_indices)
+    inputs_embeds[images_seq_mask] = encode_embeds
+
+    img_cond_mask = images_seq_mask | (input_ids == vl_chat_processor.image_start_id) | (input_ids == vl_chat_processor.image_end_id)
+    assert img_cond_mask[-1] == True  # image_start_tag
+    img_cond_mask[-1] = False
+    img_cond_embeds = inputs_embeds[img_cond_mask]
+
+    num_cond = 3 if img_cfg_weight > 0 else 2
+    tokens = torch.zeros((parallel_size * num_cond, len(input_ids)), dtype=torch.int).cuda()
+    token_embeds = torch.zeros((parallel_size * num_cond, *inputs_embeds.shape), dtype=inputs_embeds.dtype).cuda()
+    for i in range(parallel_size * num_cond):
         tokens[i, :] = input_ids
         token_embeds[i, :] = inputs_embeds
-        if i % 2 != 0:
+        if i % num_cond != 0:
             tokens[i, 1: -1] = vl_chat_processor.pad_id
             token_embeds[i, :] = mmgpt.language_model.get_input_embeddings()(tokens[i, :])
+            if i % num_cond == 2:
+                token_embeds[i, 1: 1 + img_cond_embeds.shape[0]] = img_cond_embeds
 
     inputs_embeds = token_embeds
     generated_tokens = torch.zeros((parallel_size, image_token_num_per_image), dtype=torch.int).cuda()
@@ -85,16 +103,20 @@ def generate(
         hidden_states = outputs.last_hidden_state
         
         logits = mmgpt.gen_head(hidden_states[:, -1, :])
-        logit_cond = logits[0::2, :]
-        logit_uncond = logits[1::2, :]
-        
-        logits = logit_uncond + cfg_weight * (logit_cond - logit_uncond)
+        logit_cond = logits[0::num_cond, :]
+        logit_uncond = logits[1::num_cond, :]
+
+        if num_cond == 3:
+            logit_img_cond = logits[2::num_cond, :]
+            logits = logit_uncond + img_cfg_weight * (logit_img_cond - logit_uncond) + cfg_weight * (logit_cond - logit_img_cond)
+        else:
+            logits = logit_uncond + cfg_weight * (logit_cond - logit_uncond)
         probs = torch.softmax(logits / temperature, dim=-1)
 
         next_token = torch.multinomial(probs, num_samples=1)
         generated_tokens[:, i] = next_token.squeeze(dim=-1)
 
-        next_token = torch.cat([next_token.unsqueeze(dim=1), next_token.unsqueeze(dim=1)], dim=1).view(-1)
+        next_token = torch.cat([next_token.unsqueeze(dim=1) for _ in range(num_cond)], dim=1).view(-1)
         img_embeds = mmgpt.prepare_gen_img_embeds(next_token)
         inputs_embeds = img_embeds.unsqueeze(dim=1)
 
@@ -116,6 +138,6 @@ generate(
     vl_gpt,
     vl_chat_processor,
     prepare_inputs,
-    cfg_weight=5,
-    parallel_size=1,
+    parallel_size=5,
+    img_cfg_weight=2,
 )

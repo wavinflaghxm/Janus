@@ -36,7 +36,6 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from janus.models.clip_encoder import CLIPVisionTower
 from janus.models.projector import MlpProjector
-# from janus.models.modeling_llama import LlamaForCausalLM
 
 
 class vision_head(torch.nn.Module):
@@ -412,6 +411,7 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
 
         loss = None
         if labels is not None and loss_weight is not None:
+            # Upcast to float if we need to compute the loss to avoid potential precision issues
             logits = logits.float()
             loss_weight = torch.tensor(loss_weight, dtype=torch.float32, device=labels.device)
             # Shift so that tokens < n predict n
@@ -437,6 +437,7 @@ class MultiModalityCausalLM(MultiModalityPreTrainedModel):
             if ignore_flag:
                 loss = loss * 0.0
         elif labels is not None:
+            # Upcast to float if we need to compute the loss to avoid potential precision issues
             logits = logits.float()
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
